@@ -2,13 +2,8 @@
 Variational Inference with Normalizing Flows
 arXiv:1505.05770v6
 """
-
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.distributions as D
-import torchvision.transforms as T
-from torchvision.utils import save_image
 
 import matplotlib
 matplotlib.use('Agg')
@@ -22,8 +17,6 @@ import time
 
 from util import *
 from gu import *
-
-import torch.distributions.transforms.SylvesterFlow
 
 parser = argparse.ArgumentParser()
 # data
@@ -60,39 +53,6 @@ parser.add_argument('--eval_size', type=int, default=100000, help='Sample size i
 # Flow
 # --------------------
 
-# class SylvesterTransform(nn.Module):
-#     def __init__(self, hidden_size, init_sigma=0.01):
-#         super().__init__()
-#         self.u = nn.Parameter(torch.randn(hidden_size, 1).normal_(0, init_sigma))
-#         self.w = nn.Parameter(torch.randn(hidden_size).normal_(0, init_sigma))
-#         self.b = nn.Parameter(torch.randn(hidden_size).fill_(0))
-#
-#     def forward(self, x):
-#         # allow for a single forward pass over all the transforms in the flows with a Sequential container
-#         if isinstance(x, tuple):
-#             z, sum_log_abs_det_jacobians = x
-#         else:
-#             z, sum_log_abs_det_jacobians = x, 0
-#
-#         # Support sufficient condition for invertibility.
-#         u_hat = torch.tanh(self.u)
-#         w_hat = torch.tanh(self.w)
-#
-#         f_z = z + (torch.tanh(z * w_hat + self.b) @ u_hat)
-#         Sii = 1 - (torch.tanh(z * w_hat + self.b)**2).squeeze()
-#         # print(Sii.shape)
-#         det = 1. + (Sii * w_hat * u_hat.squeeze()).sum(1)
-#         # print( torch.log(torch.abs(det) + 1e-6).shape)
-#         # exit(1)
-#         log_abs_det_jacobian = torch.log(torch.abs(det) + 1e-6).squeeze()
-#         sum_log_abs_det_jacobians += log_abs_det_jacobian#.view(f_z.size(0), -1)
-#         # print(sum_log_abs_det_jacobians.shape)
-#         # exit(1)
-#         # print(f_z.shape)
-#         # print(z.shape)
-#         # exit(1)
-#         return f_z, sum_log_abs_det_jacobians
-
 class SylvesterTransform(nn.Module):
     def __init__(self, hidden_size, init_sigma=0.01):
         super().__init__()
@@ -100,11 +60,11 @@ class SylvesterTransform(nn.Module):
         self.v = nn.Parameter(torch.randn(hidden_size, 1).normal_(0, init_sigma))
         self.w = nn.Parameter(torch.randn(1, hidden_size).normal_(0, init_sigma))
         self.b = nn.Parameter(torch.randn(hidden_size).fill_(0))
+        self.constraint = torch.relu
 
     def forward(self, x):
         # allow for a single forward pass over all the transforms in the flows with a Sequential container
         """
-
         :param x: input batch: (batch_size, 1)
         :return: f_z: transformed batch: (batch_size, 1)
                  sum_log_abs_det_jacobian: (batch_size, )
@@ -115,8 +75,8 @@ class SylvesterTransform(nn.Module):
             z, sum_log_abs_det_jacobians = x, 0
 
         # Support sufficient condition for invertibility.
-        v_hat = torch.tanh(self.v)
-        w_hat = torch.tanh(self.w)
+        v_hat = self.constraint(self.v)
+        w_hat = self.constraint(self.w)
 
         # Compute transform
         f_z = z + torch.tanh(z @ w_hat + self.b) @ v_hat
