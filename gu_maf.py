@@ -38,6 +38,7 @@ parser.add_argument('--seed', type=int, default=1, help='Random seed to use.')
 # model
 parser.add_argument('--model', default='maf', help='Which model to use: made, maf.')
 # made parameters
+parser.add_argument('--input_size', type=int, default=2, help='Input size in a model (MADE in MAF; Coupling+BN in RealNVP).')
 parser.add_argument('--n_blocks', type=int, default=5, help='Number of blocks to stack in a model (MADE in MAF; Coupling+BN in RealNVP).')
 parser.add_argument('--n_components', type=int, default=1, help='Number of Gaussian clusters for mixture of gaussians models.')
 parser.add_argument('--hidden_size', type=int, default=256, help='Hidden layer size for MADE (and each MADE block in an MAF).')
@@ -398,7 +399,7 @@ def train(model, dataloader, optimizer, scheduler, args):
             with torch.no_grad():
                 # save model
                 cur_state_path = os.path.join(model_path, str(i))
-                torch.save(model, cur_state_path + '_' + f'{args.model}.pth')
+                torch.save(model.state_dict(), cur_state_path + '_' + f'{args.model}.pth')
 
                 real = dataloader.get_sample(args.eval_size)
                 real = real[:, 0]
@@ -426,13 +427,14 @@ def train(model, dataloader, optimizer, scheduler, args):
                 ax.spines["left"].set_visible(False)
                 ax.get_xaxis().tick_bottom()
 
-                _sample = np.concatenate([real_sample, fake_sample])
-                x_min, x_max = min(_sample), max(_sample)
-                range_width = x_max - x_min
+                # _sample = np.concatenate([real_sample, fake_sample])
                 kde_num = 200
-                kde_width = kde_num * range_width / args.eval_size
-                sns.kdeplot(real_sample, bw=kde_width, label='Data', color='green', shade=True, linewidth=6)
-                sns.kdeplot(fake_sample, bw=kde_width, label='Model', color='orange', shade=True, linewidth=6)
+                min_real, max_real = min(real_sample), max(real_sample)
+                kde_width_real = kde_num * (max_real - min_real) / args.eval_size
+                min_fake, max_fake = min(fake_sample), max(fake_sample)
+                kde_width_fake = kde_num * (max_fake - min_fake) / args.eval_size
+                sns.kdeplot(real_sample, bw=kde_width_real, label='Data', color='green', shade=True, linewidth=6)
+                sns.kdeplot(fake_sample, bw=kde_width_fake, label='Model', color='orange', shade=True, linewidth=6)
 
                 ax.set_title(f'True EM Distance: {w_distance_real}.', fontsize=FONTSIZE)
                 ax.legend(loc=2, fontsize=FONTSIZE)
@@ -486,7 +488,6 @@ if __name__ == '__main__':
         dataloader = GausUniffMixture(n_mixture=args.gu_num, mean_dist=5, sigma=0.1, unif_intsect=5, unif_ratio=3,
                                       device=args.device, extend_dim=True)
     args.input_size = 2
-    args.input_dims = 2
 
     # model
     if args.model == 'maf':

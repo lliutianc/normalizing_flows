@@ -14,6 +14,7 @@ plt.style.use('seaborn-paper')
 import sys
 import argparse
 import time
+import math
 
 from util import *
 from gu import *
@@ -23,24 +24,25 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--gu_num', type=int, default=8, help='Components of GU clusters.')
 parser.add_argument('--dataset', default='GU', help='Which dataset to use.')
 parser.add_argument('--seed', type=int, default=1, help='Random seed to use.')
+parser.add_argument('--extend_dim', action='store_true', help='Extend an extra dimension in GU.')
+
 # model
-parser.add_argument('--model', default='planar', choices=['planar', 'sylvester'], help='Which model to use: planar, sylvester.')
+parser.add_argument('--model', default='sylvester', choices=['planar', 'sylvester'], help='Which model to use: planar, sylvester.')
 # model parameters
-parser.add_argument('--n_blocks', type=int, default=5, help='Number of blocks to stack in a model (MADE in MAF; Coupling+BN in RealNVP).')
+parser.add_argument('--n_blocks', type=int, default=30, help='Number of blocks to stack in a model (MADE in MAF; Coupling+BN in RealNVP).')
 parser.add_argument('--hidden_size', type=int, default=64, help='Hidden layer size for MADE (and each MADE block in an MAF).')
 parser.add_argument('--n_hidden', type=int, default=1, help='Number of hidden layers in each MADE.')
 parser.add_argument('--no_learn_base', action='store_true', help='Whether to learn a mu-sigma affine transform of the base distribution.')
-
 # training params
 parser.add_argument('--batch_size', type=int, default=2048, help='Batch size in training.')
 parser.add_argument('--niters', type=int, default=50000, help='Total iteration numbers in training.')
-parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate.')
+parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate.')
 parser.add_argument('--weight_decay', type=float, default=1e-6, help='Weight decay in Adam.')
 parser.add_argument('--beta1', type=float, default=0.9, help='Beta 1 in Adam.')
 parser.add_argument('--beta2', type=float, default=0.999, help='Beta 2 in Adam.')
-
+# save log
 parser.add_argument('--log_interval', type=int, default=1000, help='How often to show loss statistics and save models/samples.')
-
+# whether use cyclic lr.
 parser.add_argument('--clr', action='store_true', help='Use cyclic LR in training.')
 parser.add_argument('--clr_size_up', type=int, default=2000, help='Size of up step in cyclic LR.')
 parser.add_argument('--clr_scale', type=int, default=3, help='Scale of base lr in cyclic LR.')
@@ -60,7 +62,7 @@ class SylvesterTransform(nn.Module):
         self.v = nn.Parameter(torch.randn(hidden_size, 1).normal_(0, init_sigma))
         self.w = nn.Parameter(torch.randn(1, hidden_size).normal_(0, init_sigma))
         self.b = nn.Parameter(torch.randn(hidden_size).fill_(0))
-        self.constraint = torch.relu
+        self.constraint_const = math.sqrt(hidden_size) + 1e-6
 
     def forward(self, x):
         # allow for a single forward pass over all the transforms in the flows with a Sequential container
@@ -88,12 +90,15 @@ class SylvesterTransform(nn.Module):
         sum_log_abs_det_jacobians += log_abs_det_jacobian
         return f_z, sum_log_abs_det_jacobians
 
+    def constraint(self, x):
+        return torch.tanh(x) / self.constraint_const
+
 
 class PlanarTransform(nn.Module):
-    def __init__(self, init_sigma=0.01):
+    def __init__(self, input_size, init_sigma=0.01):
         super().__init__()
-        self.u = nn.Parameter(torch.randn(1, 1).normal_(0, init_sigma))
-        self.w = nn.Parameter(torch.randn(1, 1).normal_(0, init_sigma))
+        self.u = nn.Parameter(torch.randn(1, input_size).normal_(0, init_sigma))
+        self.w = nn.Parameter(torch.randn(1, input_size).normal_(0, init_sigma))
         self.b = nn.Parameter(torch.randn(1).fill_(0))
 
     def forward(self, x, normalize_u=True):
@@ -141,7 +146,8 @@ class AffineTransform(nn.Module):
 class SylvesterFLow(nn.Module):
     def __init__(self, n_blocks, input_size, hidden_size, **kwargs):
         super().__init__()
-
+        if input_size != 1 and args.model == 'sylvester':
+            raise NotImplementedError('sylvester only supports original 1D GUM.')
         self.register_buffer('base_dist_mean', torch.zeros(input_size))
         self.register_buffer('base_dist_var', torch.ones(input_size))
 
@@ -151,8 +157,10 @@ class SylvesterFLow(nn.Module):
             if args.model == 'sylvester':
                 modules += [SylvesterTransform(hidden_size, kwargs.get('init_sigma', 0.01))]
             else:
-                modules += [PlanarTransform(kwargs.get('init_sigma', 0.01))]
-        # modules += [AffineTransform(True)]
+                modules += [PlanarTransform(input_size, kwargs.get('init_sigma', 0.01))]
+        if args.learn_base:
+            modules += [AffineTransform(True)]
+
         self.net = nn.Sequential(*modules)
 
     @property
@@ -209,6 +217,7 @@ def train(model, dataloader, optimizer, scheduler, args):
                 ax.get_xaxis().tick_bottom()
 
                 real_sample = real.cpu().data.numpy().squeeze()
+
                 x_min, x_max = min(real_sample), max(real_sample)
                 range_width = x_max - x_min
 
@@ -219,13 +228,16 @@ def train(model, dataloader, optimizer, scheduler, args):
                 eval_range = eval_range.cpu().data.numpy().squeeze()
                 prob_learned = prob.cpu().data.numpy().squeeze()
 
+                # print(eval_range.shape)
+                # print(prob_learned.shape)
+
                 kde_num = 200
                 kde_width = kde_num * range_width / args.eval_size
-                sns.kdeplot(real_sample, bw=kde_width, label='Data', color='green', shade=True, linewidth=6)
-                ax_r = ax.twinx()
-                ax_r.plot(eval_range, prob_learned, label='Model', color='orange', linewidth=6)
+                sns.kdeplot(real_sample, bw=kde_width, label='Data', color='green', shade=True, alpha=0.5, linewidth=6)
+                ax.plot(eval_range, prob_learned, label='Model', color='orange', linewidth=6)
+                ax.fill_between(eval_range, prob_learned, color='orange', alpha=0.5, linewidth=6)
 
-                ax.set_title(f'True EM Distance: {w_distance_real}.', fontsize=FONTSIZE)
+                # ax.set_title(f'True EM Distance: {w_distance_real}.', fontsize=FONTSIZE)
                 ax.legend(loc=2, fontsize=FONTSIZE)
                 ax.set_ylabel('Estimated Density by KDE', fontsize=FONTSIZE)
                 ax.tick_params(axis='x', labelsize=FONTSIZE * 0.7)
@@ -242,7 +254,7 @@ def train(model, dataloader, optimizer, scheduler, args):
 
 
 if __name__ == '__main__':
-
+    raise NotImplementedError("Plots haven't fixed.")
     w_distance_real = -1
 
     args = parser.parse_args()
@@ -273,6 +285,7 @@ if __name__ == '__main__':
     else:
         dataloader = GausUniffMixture(n_mixture=args.gu_num, mean_dist=5, sigma=0.1, unif_intsect=5, unif_ratio=3,
                                       device=args.device, extend_dim=False)
+
     args.input_size = 1
     args.input_dims = 1
 
