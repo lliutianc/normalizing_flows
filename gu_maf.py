@@ -3,6 +3,17 @@ Masked Autoregressive Flow for Density Estimation
 arXiv:1705.07057v4
 """
 
+from gu import *
+from util import *
+import time
+import copy
+import pprint
+import argparse
+import math
+import sys
+import os
+import seaborn.apionly as sns
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,83 +23,164 @@ from torchvision.utils import save_image
 
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import seaborn.apionly as sns
 plt.style.use('seaborn-paper')
-
-import os
-import sys
-import math
-import argparse
-import pprint
-import copy
-import time
-
-from util import *
-from gu import *
 
 
 parser = argparse.ArgumentParser()
 # action
 # data
-parser.add_argument('--gu_num', type=int, default=8, help='Components of GU clusters.')
+parser.add_argument('--gu_num', type=int, default=8,
+                    help='Components of GU clusters.')
 parser.add_argument('--dataset', default='GU', help='Which dataset to use.')
-parser.add_argument('--flip_toy_var_order', action='store_true', help='Whether to flip the toy dataset variable order to (x2, x1).')
+parser.add_argument(
+    '--flip_toy_var_order',
+    action='store_true',
+    help='Whether to flip the toy dataset variable order to (x2, x1).')
 parser.add_argument('--seed', type=int, default=1, help='Random seed to use.')
 # model
-parser.add_argument('--model', default='maf', help='Which model to use: made, maf.')
+parser.add_argument(
+    '--model',
+    default='maf',
+    help='Which model to use: made, maf.')
 # made parameters
-parser.add_argument('--input_size', type=int, default=2, help='Input size in a model (MADE in MAF; Coupling+BN in RealNVP).')
-parser.add_argument('--n_blocks', type=int, default=5, help='Number of blocks to stack in a model (MADE in MAF; Coupling+BN in RealNVP).')
-parser.add_argument('--n_components', type=int, default=1, help='Number of Gaussian clusters for mixture of gaussians models.')
-parser.add_argument('--hidden_size', type=int, default=256, help='Hidden layer size for MADE (and each MADE block in an MAF).')
-parser.add_argument('--n_hidden', type=int, default=1, help='Number of hidden layers in each MADE.')
-parser.add_argument('--activation_fn', type=str, default='relu', help='What activation function to use in the MADEs.')
-parser.add_argument('--input_order', type=str, default='sequential', help='What input order to use (sequential | random).')
-parser.add_argument('--conditional', default=False, action='store_true', help='Whether to use a conditional model.')
+parser.add_argument(
+    '--input_size',
+    type=int,
+    default=2,
+    help='Input size in a model (MADE in MAF; Coupling+BN in RealNVP).')
+parser.add_argument(
+    '--n_blocks',
+    type=int,
+    default=5,
+    help='Number of blocks to stack in a model (MADE in MAF; Coupling+BN in RealNVP).')
+parser.add_argument(
+    '--n_components',
+    type=int,
+    default=1,
+    help='Number of Gaussian clusters for mixture of gaussians models.')
+parser.add_argument(
+    '--hidden_size',
+    type=int,
+    default=256,
+    help='Hidden layer size for MADE (and each MADE block in an MAF).')
+parser.add_argument(
+    '--n_hidden',
+    type=int,
+    default=1,
+    help='Number of hidden layers in each MADE.')
+parser.add_argument(
+    '--activation_fn',
+    type=str,
+    default='relu',
+    help='What activation function to use in the MADEs.')
+parser.add_argument(
+    '--input_order',
+    type=str,
+    default='sequential',
+    help='What input order to use (sequential | random).')
+parser.add_argument(
+    '--conditional',
+    default=False,
+    action='store_true',
+    help='Whether to use a conditional model.')
 parser.add_argument('--no_batch_norm', action='store_true')
 # training params
-parser.add_argument('--batch_size', type=int, default=2048, help='Batch size in training.')
-parser.add_argument('--niters', type=int, default=50000, help='Total iteration numbers in training.')
+parser.add_argument(
+    '--batch_size',
+    type=int,
+    default=2048,
+    help='Batch size in training.')
+parser.add_argument('--niters', type=int, default=50000,
+                    help='Total iteration numbers in training.')
 parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate.')
-parser.add_argument('--weight_decay', type=float, default=1e-6, help='Weight decay in Adam.')
+parser.add_argument(
+    '--weight_decay',
+    type=float,
+    default=1e-6,
+    help='Weight decay in Adam.')
 parser.add_argument('--beta1', type=float, default=0.9, help='Beta 1 in Adam.')
-parser.add_argument('--beta2', type=float, default=0.999, help='Beta 2 in Adam.')
+parser.add_argument(
+    '--beta2',
+    type=float,
+    default=0.999,
+    help='Beta 2 in Adam.')
 
-parser.add_argument('--log_interval', type=int, default=1000, help='How often to show loss statistics and save models/samples.')
+parser.add_argument(
+    '--log_interval',
+    type=int,
+    default=1000,
+    help='How often to show loss statistics and save models/samples.')
 
-parser.add_argument('--clr', action='store_true', help='Use cyclic LR in training.')
-parser.add_argument('--clr_size_up', type=int, default=2000, help='Size of up step in cyclic LR.')
-parser.add_argument('--clr_scale', type=int, default=3, help='Scale of base lr in cyclic LR.')
+parser.add_argument(
+    '--clr',
+    action='store_true',
+    help='Use cyclic LR in training.')
+parser.add_argument(
+    '--clr_size_up',
+    type=int,
+    default=2000,
+    help='Size of up step in cyclic LR.')
+parser.add_argument('--clr_scale', type=int, default=3,
+                    help='Scale of base lr in cyclic LR.')
 
-parser.add_argument('--cuda', type=int, default=2, help='Number of CUDA to use if available.')
-parser.add_argument('--eval_size', type=int, default=100000, help='Sample size in evaluation.')
+parser.add_argument(
+    '--cuda',
+    type=int,
+    default=2,
+    help='Number of CUDA to use if available.')
+parser.add_argument(
+    '--eval_size',
+    type=int,
+    default=100000,
+    help='Sample size in evaluation.')
 
 # --------------------
 # Model layers and helpers
 # --------------------
 
 
-def create_masks(input_size, hidden_size, n_hidden, input_order='sequential', input_degrees=None):
+def create_masks(
+        input_size,
+        hidden_size,
+        n_hidden,
+        input_order='sequential',
+        input_degrees=None):
     # MADE paper sec 4:
-    # degrees of connections between layers -- ensure at most in_degree - 1 connections
+    # degrees of connections between layers -- ensure at most in_degree - 1
+    # connections
     degrees = []
 
     # set input degrees to what is provided in args (the flipped order of the previous layer in a stack of mades);
-    # else init input degrees based on strategy in input_order (sequential or random)
+    # else init input degrees based on strategy in input_order (sequential or
+    # random)
     if input_order == 'sequential':
-        degrees += [torch.arange(input_size)] if input_degrees is None else [input_degrees]
+        degrees += [torch.arange(input_size)
+                    ] if input_degrees is None else [input_degrees]
         for _ in range(n_hidden + 1):
             degrees += [torch.arange(hidden_size) % (input_size - 1)]
-        degrees += [torch.arange(input_size) % input_size - 1] if input_degrees is None else [input_degrees % input_size - 1]
+        degrees += [torch.arange(input_size) %
+                    input_size -
+                    1] if input_degrees is None else [input_degrees %
+                                                      input_size -
+                                                      1]
 
     elif input_order == 'random':
-        degrees += [torch.randperm(input_size)] if input_degrees is None else [input_degrees]
+        degrees += [torch.randperm(input_size)
+                    ] if input_degrees is None else [input_degrees]
         for _ in range(n_hidden + 1):
             min_prev_degree = min(degrees[-1].min().item(), input_size - 1)
-            degrees += [torch.randint(min_prev_degree, input_size, (hidden_size,))]
+            degrees += [torch.randint(min_prev_degree,
+                                      input_size, (hidden_size,))]
         min_prev_degree = min(degrees[-1].min().item(), input_size - 1)
-        degrees += [torch.randint(min_prev_degree, input_size, (input_size,)) - 1] if input_degrees is None else [input_degrees - 1]
+        degrees += [
+            torch.randint(
+                min_prev_degree,
+                input_size,
+                (input_size,
+                 )) -
+            1] if input_degrees is None else [
+            input_degrees -
+            1]
 
     # construct masks
     masks = []
@@ -100,6 +192,7 @@ def create_masks(input_size, hidden_size, n_hidden, input_order='sequential', in
 
 class MaskedLinear(nn.Linear):
     """ MADE building block layer """
+
     def __init__(self, input_size, n_outputs, mask, cond_label_size=None):
         super().__init__(input_size, n_outputs)
 
@@ -107,7 +200,11 @@ class MaskedLinear(nn.Linear):
 
         self.cond_label_size = cond_label_size
         if cond_label_size is not None:
-            self.cond_weight = nn.Parameter(torch.rand(n_outputs, cond_label_size) / math.sqrt(cond_label_size))
+            self.cond_weight = nn.Parameter(
+                torch.rand(
+                    n_outputs,
+                    cond_label_size) /
+                math.sqrt(cond_label_size))
 
     def forward(self, x, y=None):
         out = F.linear(x, self.weight * self.mask, self.bias)
@@ -118,18 +215,26 @@ class MaskedLinear(nn.Linear):
     def extra_repr(self):
         return 'in_features={}, out_features={}, bias={}'.format(
             self.in_features, self.out_features, self.bias is not None
-        ) + (self.cond_label_size != None) * ', cond_features={}'.format(self.cond_label_size)
+        ) + (self.cond_label_size is not None) * ', cond_features={}'.format(self.cond_label_size)
 
 
 class LinearMaskedCoupling(nn.Module):
     """ Modified RealNVP Coupling Layers per the MAF paper """
-    def __init__(self, input_size, hidden_size, n_hidden, mask, cond_label_size=None):
+
+    def __init__(
+            self,
+            input_size,
+            hidden_size,
+            n_hidden,
+            mask,
+            cond_label_size=None):
         super().__init__()
 
         self.register_buffer('mask', mask)
 
         # scale function
-        s_net = [nn.Linear(input_size + (cond_label_size if cond_label_size is not None else 0), hidden_size)]
+        s_net = [nn.Linear(
+            input_size + (cond_label_size if cond_label_size is not None else 0), hidden_size)]
         for _ in range(n_hidden):
             s_net += [nn.Tanh(), nn.Linear(hidden_size, hidden_size)]
         s_net += [nn.Tanh(), nn.Linear(hidden_size, input_size)]
@@ -139,7 +244,8 @@ class LinearMaskedCoupling(nn.Module):
         self.t_net = copy.deepcopy(self.s_net)
         # replace Tanh with ReLU's per MAF paper
         for i in range(len(self.t_net)):
-            if not isinstance(self.t_net[i], nn.Linear): self.t_net[i] = nn.ReLU()
+            if not isinstance(self.t_net[i], nn.Linear):
+                self.t_net[i] = nn.ReLU()
 
     def forward(self, x, y=None):
         # apply mask
@@ -148,9 +254,12 @@ class LinearMaskedCoupling(nn.Module):
         # run through model
         s = self.s_net(mx if y is None else torch.cat([y, mx], dim=1))
         t = self.t_net(mx if y is None else torch.cat([y, mx], dim=1))
-        u = mx + (1 - self.mask) * (x - t) * torch.exp(-s)  # cf RealNVP eq 8 where u corresponds to x (here we're modeling u)
+        # cf RealNVP eq 8 where u corresponds to x (here we're modeling u)
+        u = mx + (1 - self.mask) * (x - t) * torch.exp(-s)
 
-        log_abs_det_jacobian = - (1 - self.mask) * s  # log det du/dx; cf RealNVP 8 and 6; note, sum over input_size done at model log_prob
+        # log det du/dx; cf RealNVP 8 and 6; note, sum over input_size done at
+        # model log_prob
+        log_abs_det_jacobian = - (1 - self.mask) * s
 
         return u, log_abs_det_jacobian
 
@@ -170,6 +279,7 @@ class LinearMaskedCoupling(nn.Module):
 
 class BatchNorm(nn.Module):
     """ RealNVP BatchNorm layer """
+
     def __init__(self, input_size, momentum=0.9, eps=1e-5):
         super().__init__()
         self.momentum = momentum
@@ -184,11 +294,15 @@ class BatchNorm(nn.Module):
     def forward(self, x, cond_y=None):
         if self.training:
             self.batch_mean = x.mean(0)
-            self.batch_var = x.var(0) # note MAF paper uses biased variance estimate; ie x.var(0, unbiased=False)
+            # note MAF paper uses biased variance estimate; ie x.var(0,
+            # unbiased=False)
+            self.batch_var = x.var(0)
 
             # update running mean
-            self.running_mean.mul_(self.momentum).add_(self.batch_mean.data * (1 - self.momentum))
-            self.running_var.mul_(self.momentum).add_(self.batch_var.data * (1 - self.momentum))
+            self.running_mean.mul_(self.momentum).add_(
+                self.batch_mean.data * (1 - self.momentum))
+            self.running_var.mul_(self.momentum).add_(
+                self.batch_var.data * (1 - self.momentum))
 
             mean = self.batch_mean
             var = self.batch_var
@@ -224,6 +338,7 @@ class BatchNorm(nn.Module):
 
 class FlowSequential(nn.Sequential):
     """ Container for layers of a normalizing flow """
+
     def forward(self, x, y):
         sum_log_abs_det_jacobians = 0
         for module in self:
@@ -244,7 +359,15 @@ class FlowSequential(nn.Sequential):
 
 
 class MADE(nn.Module):
-    def __init__(self, input_size, hidden_size, n_hidden, cond_label_size=None, activation='relu', input_order='sequential', input_degrees=None):
+    def __init__(
+            self,
+            input_size,
+            hidden_size,
+            n_hidden,
+            cond_label_size=None,
+            activation='relu',
+            input_order='sequential',
+            input_degrees=None):
         """
         Args:
             input_size -- scalar; dim of inputs
@@ -261,7 +384,8 @@ class MADE(nn.Module):
         self.register_buffer('base_dist_var', torch.ones(input_size))
 
         # create masks
-        masks, self.input_degrees = create_masks(input_size, hidden_size, n_hidden, input_order, input_degrees)
+        masks, self.input_degrees = create_masks(
+            input_size, hidden_size, n_hidden, input_order, input_degrees)
 
         # setup activation
         if activation == 'relu':
@@ -272,11 +396,17 @@ class MADE(nn.Module):
             raise ValueError('Check activation function.')
 
         # construct model
-        self.net_input = MaskedLinear(input_size, hidden_size, masks[0], cond_label_size)
+        self.net_input = MaskedLinear(
+            input_size, hidden_size, masks[0], cond_label_size)
         self.net = []
         for m in masks[1:-1]:
-            self.net += [activation_fn, MaskedLinear(hidden_size, hidden_size, m)]
-        self.net += [activation_fn, MaskedLinear(hidden_size, 2 * input_size, masks[-1].repeat(2,1))]
+            self.net += [activation_fn,
+                         MaskedLinear(hidden_size, hidden_size, m)]
+        self.net += [activation_fn,
+                     MaskedLinear(hidden_size,
+                                  2 * input_size,
+                                  masks[-1].repeat(2,
+                                                   1))]
         self.net = nn.Sequential(*self.net)
 
     @property
@@ -298,18 +428,29 @@ class MADE(nn.Module):
         # run through reverse model
         for i in self.input_degrees:
             m, loga = self.net(self.net_input(x, y)).chunk(chunks=2, dim=1)
-            x[:,i] = u[:,i] * torch.exp(loga[:,i]) + m[:,i]
+            x[:, i] = u[:, i] * torch.exp(loga[:, i]) + m[:, i]
         log_abs_det_jacobian = loga
         return x, log_abs_det_jacobian
 
     def log_prob(self, x, y=None):
         u, log_abs_det_jacobian = self.forward(x, y)
-        return torch.sum(self.base_dist.log_prob(u) + log_abs_det_jacobian, dim=1)
-
+        return torch.sum(
+            self.base_dist.log_prob(u) +
+            log_abs_det_jacobian,
+            dim=1)
 
 
 class MAF(nn.Module):
-    def __init__(self, n_blocks, input_size, hidden_size, n_hidden, cond_label_size=None, activation='relu', input_order='sequential', batch_norm=True):
+    def __init__(
+            self,
+            n_blocks,
+            input_size,
+            hidden_size,
+            n_hidden,
+            cond_label_size=None,
+            activation='relu',
+            input_order='sequential',
+            batch_norm=True):
         super().__init__()
         # base distribution for calculation of log prob under the model
         self.register_buffer('base_dist_mean', torch.zeros(input_size))
@@ -319,7 +460,13 @@ class MAF(nn.Module):
         modules = []
         self.input_degrees = None
         for i in range(n_blocks):
-            modules += [MADE(input_size, hidden_size, n_hidden, cond_label_size, activation, input_order, self.input_degrees)]
+            modules += [MADE(input_size,
+                             hidden_size,
+                             n_hidden,
+                             cond_label_size,
+                             activation,
+                             input_order,
+                             self.input_degrees)]
             self.input_degrees = modules[-1].input_degrees.flip(0)
             modules += batch_norm * [BatchNorm(input_size)]
 
@@ -337,11 +484,21 @@ class MAF(nn.Module):
 
     def log_prob(self, x, y=None):
         u, sum_log_abs_det_jacobians = self.forward(x, y)
-        return torch.sum(self.base_dist.log_prob(u) + sum_log_abs_det_jacobians, dim=1)
+        return torch.sum(
+            self.base_dist.log_prob(u) +
+            sum_log_abs_det_jacobians,
+            dim=1)
 
 
 class RealNVP(nn.Module):
-    def __init__(self, n_blocks, input_size, hidden_size, n_hidden, cond_label_size=None, batch_norm=True):
+    def __init__(
+            self,
+            n_blocks,
+            input_size,
+            hidden_size,
+            n_hidden,
+            cond_label_size=None,
+            batch_norm=True):
         super().__init__()
 
         # base distribution for calculation of log prob under the model
@@ -352,7 +509,13 @@ class RealNVP(nn.Module):
         modules = []
         mask = torch.arange(input_size).float() % 2
         for i in range(n_blocks):
-            modules += [LinearMaskedCoupling(input_size, hidden_size, n_hidden, mask, cond_label_size)]
+            modules += [
+                LinearMaskedCoupling(
+                    input_size,
+                    hidden_size,
+                    n_hidden,
+                    mask,
+                    cond_label_size)]
             mask = 1 - mask
             modules += batch_norm * [BatchNorm(input_size)]
 
@@ -370,7 +533,10 @@ class RealNVP(nn.Module):
 
     def log_prob(self, x, y=None):
         u, sum_log_abs_det_jacobians = self.forward(x, y)
-        return torch.sum(self.base_dist.log_prob(u) + sum_log_abs_det_jacobians, dim=1)
+        return torch.sum(
+            self.base_dist.log_prob(u) +
+            sum_log_abs_det_jacobians,
+            dim=1)
 
 
 # --------------------
@@ -399,7 +565,11 @@ def train(model, dataloader, optimizer, scheduler, args):
             with torch.no_grad():
                 # save model
                 cur_state_path = os.path.join(model_path, str(i))
-                torch.save(model.state_dict(), cur_state_path + '_' + f'{args.model}.pth')
+                torch.save(
+                    model.state_dict(),
+                    cur_state_path +
+                    '_' +
+                    f'{args.model}.pth')
 
                 real = dataloader.get_sample(args.eval_size)
                 real = real[:, 0]
@@ -408,8 +578,9 @@ def train(model, dataloader, optimizer, scheduler, args):
                 fake = fake[:, 0]
                 w_distance_real = w_distance(real, fake)
 
-                logger.info(f'Iter {i} / {args.niters}, Time {round(time.time() - start, 4)},  '
-                            f'w_distance_real: {w_distance_real}, loss {round(running_loss / args.log_interval, 5)}')
+                logger.info(
+                    f'Iter {i} / {args.niters}, Time {round(time.time() - start, 4)},  '
+                    f'w_distance_real: {w_distance_real}, loss {round(running_loss / args.log_interval, 5)}')
 
                 real_sample = real.cpu().data.numpy().squeeze()
                 fake_sample = fake.cpu().data.numpy().squeeze()
@@ -430,17 +601,36 @@ def train(model, dataloader, optimizer, scheduler, args):
                 # _sample = np.concatenate([real_sample, fake_sample])
                 kde_num = 200
                 min_real, max_real = min(real_sample), max(real_sample)
-                kde_width_real = kde_num * (max_real - min_real) / args.eval_size
+                kde_width_real = kde_num * \
+                    (max_real - min_real) / args.eval_size
                 min_fake, max_fake = min(fake_sample), max(fake_sample)
-                kde_width_fake = kde_num * (max_fake - min_fake) / args.eval_size
-                sns.kdeplot(real_sample, bw=kde_width_real, label='Data', color='green', shade=True, linewidth=6)
-                sns.kdeplot(fake_sample, bw=kde_width_fake, label='Model', color='orange', shade=True, linewidth=6)
+                kde_width_fake = kde_num * \
+                    (max_fake - min_fake) / args.eval_size
+                sns.kdeplot(
+                    real_sample,
+                    bw=kde_width_real,
+                    label='Data',
+                    color='green',
+                    shade=True,
+                    linewidth=6)
+                sns.kdeplot(
+                    fake_sample,
+                    bw=kde_width_fake,
+                    label='Model',
+                    color='orange',
+                    shade=True,
+                    linewidth=6)
 
-                ax.set_title(f'True EM Distance: {w_distance_real}.', fontsize=FONTSIZE)
+                ax.set_title(
+                    f'True EM Distance: {w_distance_real}.',
+                    fontsize=FONTSIZE)
                 ax.legend(loc=2, fontsize=FONTSIZE)
                 ax.set_ylabel('Estimated Density by KDE', fontsize=FONTSIZE)
                 ax.tick_params(axis='x', labelsize=FONTSIZE * 0.7)
-                ax.tick_params(axis='y', labelsize=FONTSIZE * 0.5, direction='in')
+                ax.tick_params(
+                    axis='y',
+                    labelsize=FONTSIZE * 0.5,
+                    direction='in')
 
                 cur_img_path = os.path.join(image_path, str(i) + '.jpg')
                 plt.tight_layout()
@@ -476,40 +666,75 @@ if __name__ == '__main__':
     logger = get_logger(log_path)
 
     # setup device
-    args.device = torch.device(f'cuda:{args.cuda}' if torch.cuda.is_available() else 'cpu')
+    args.device = torch.device(
+        f'cuda:{args.cuda}' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(args.seed)
-    if args.device.type == 'cuda': torch.cuda.manual_seed(args.seed)
+    if args.device.type == 'cuda':
+        torch.cuda.manual_seed(args.seed)
 
     # load data
     if args.gu_num == 8:
-        dataloader = GausUniffMixture(n_mixture=args.gu_num, mean_dist=10, sigma=2, unif_intsect=1.5, unif_ratio=1.,
-                                      device=args.device, extend_dim=True)
+        dataloader = GausUniffMixture(
+            n_mixture=args.gu_num,
+            mean_dist=10,
+            sigma=2,
+            unif_intsect=1.5,
+            unif_ratio=1.,
+            device=args.device,
+            extend_dim=True)
     else:
-        dataloader = GausUniffMixture(n_mixture=args.gu_num, mean_dist=5, sigma=0.1, unif_intsect=5, unif_ratio=3,
-                                      device=args.device, extend_dim=True)
+        dataloader = GausUniffMixture(
+            n_mixture=args.gu_num,
+            mean_dist=5,
+            sigma=0.1,
+            unif_intsect=5,
+            unif_ratio=3,
+            device=args.device,
+            extend_dim=True)
     args.input_size = 2
 
     # model
     if args.model == 'maf':
-        model = MAF(args.n_blocks, args.input_size, args.hidden_size, args.n_hidden, None,
-                    args.activation_fn, args.input_order, batch_norm=not args.no_batch_norm)
+        model = MAF(
+            args.n_blocks,
+            args.input_size,
+            args.hidden_size,
+            args.n_hidden,
+            None,
+            args.activation_fn,
+            args.input_order,
+            batch_norm=not args.no_batch_norm)
 
-    elif args.model =='realnvp':
-        model = RealNVP(args.n_blocks, args.input_size, args.hidden_size, args.n_hidden, cond_label_size=None,
-                        batch_norm=not args.no_batch_norm)
+    elif args.model == 'realnvp':
+        model = RealNVP(
+            args.n_blocks,
+            args.input_size,
+            args.hidden_size,
+            args.n_hidden,
+            cond_label_size=None,
+            batch_norm=not args.no_batch_norm)
     else:
         raise NotImplementedError('Unrecognized model.')
 
     model = model.to(args.device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(args.beta1, args.beta2))
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        betas=(
+            args.beta1,
+            args.beta2))
     if args.clr:
-        scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=args.lr / args.clr_scale, max_lr=args.lr,
-                                                      step_size_up=args.clr_size_up, cycle_momentum=False)
+        scheduler = torch.optim.lr_scheduler.CyclicLR(
+            optimizer,
+            base_lr=args.lr /
+            args.clr_scale,
+            max_lr=args.lr,
+            step_size_up=args.clr_size_up,
+            cycle_momentum=False)
     else:
         scheduler = None
 
     logger.info('Start training...')
     train(model, dataloader, optimizer, scheduler, args)
     logger.info('Finish All...')
-
-
